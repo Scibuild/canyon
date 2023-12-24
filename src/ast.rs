@@ -74,6 +74,7 @@ pub enum Expr_ {
     Block(Vec<Option<PExpr>>),
     Lambda(Vec<(String, PSynTy)>, PSynTy, PExpr),
     VarDecl(String, Option<PSynTy>, Option<PExpr>),
+    ArrayLiteral(Vec<PExpr>),
 }
 
 impl fmt::Display for Expr_ {
@@ -124,6 +125,13 @@ impl fmt::Display for Expr_ {
                     write!(f, " = {}", expr)?;
                 }
                 Ok(())
+            }
+            ArrayLiteral(items) => {
+                write!(f, "[")?;
+                for item in items {
+                    write!(f, "{}, ", item)?;
+                }
+                write!(f, "]")
             }
         }
     }

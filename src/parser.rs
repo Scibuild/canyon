@@ -219,6 +219,7 @@ parser! {
         False => Node::mk(span!(), Expr_::Bool(false)),
         Int(val) => Node::mk(span!(), Expr_::Int(val)),
         Oparen expr[e] Cparen => e,
+        Obrack fnArgs[items] Cbrack => Node::mk(span!(), Expr_::ArrayLiteral(items)),
     }
 
     typ: PSynTy {

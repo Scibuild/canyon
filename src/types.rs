@@ -6,6 +6,7 @@ pub enum Ty {
     Int,
     Bool,
     Unit,
+    Bottom,
     Array(Box<Ty>),
     Fn(Vec<Ty>, Box<Ty>),
 }
@@ -148,7 +149,6 @@ impl Elaborator {
                         unreachable!();
                 };
 
-
                 self.insert_var(name, ty);
 
                 Ty::Unit
@@ -181,7 +181,8 @@ impl Elaborator {
                 self.unify_expr(block, &Ty::Unit)?.clone()
             }
             Assign(lval, rval) => {
-                self.unify_expr(rval, self.elab_lvalue(lval)?)?;
+                let lval_ty = self.elab_lvalue(lval)?;
+                self.unify_expr(rval, lval_ty)?;
                 Ty::Unit
             }
             FnCall(fun, args) => {
@@ -201,15 +202,7 @@ impl Elaborator {
 
                 *fun_ret_ty.to_owned()
             }
-            Subscript(array, index) => {
-                self.unify_expr(index, &Ty::Int)?;
-                let item_ty = match self.elaborate_expr(array)? {
-                    Ty::Array(item) => item,
-                    ty => return Err(TypeError::mk(expr.span, 
-                            CannotSubscriptType(ty.clone())))
-                };
-                *item_ty.clone()
-            }
+            Subscript(array, index) => self.elab_subscript(expr.span, array, index)?,
             Lambda(args, ret_ty, block) => {
                 self.push_scope();
                 let mut args_elabbed: Vec<Ty> = vec![];
@@ -226,15 +219,38 @@ impl Elaborator {
             Selector(_expr, _field) => {
                 unimplemented!()
             }
+            ArrayLiteral(items) => {
+                if let Some((head, tail)) = items.split_first_mut() {
+                    let item_ty = self.elaborate_expr(head)?;
+                    for item in tail {
+                        self.unify_expr(item, item_ty)?;
+                    }
+
+                    Ty::Array(Box::new(item_ty.clone()))
+                } else {
+                    Ty::Array(Box::new(Ty::Bottom))
+                }
+            }
         });
         Ok(expr.ty.as_ref().unwrap())
     }
 
-    fn elab_lvalue<'a>(&self, expr: &'a mut ast::PExpr) -> Result<&'a Ty, TypeError> {
+    fn elab_subscript(&mut self, span: Span, array: &mut ast::PExpr, index: &mut ast::PExpr) -> Result<Ty, TypeError> {
+                self.unify_expr(index, &Ty::Int)?;
+                let item_ty = match self.elaborate_expr(array)? {
+                    Ty::Array(item) => item,
+                    ty => return Err(TypeError::mk(span, 
+                            CannotSubscriptType(ty.clone())))
+                };
+                Ok(*item_ty.clone())
+    }
+
+    fn elab_lvalue<'a>(&mut self, expr: &'a mut ast::PExpr) -> Result<&'a Ty, TypeError> {
         use ast::Expr_::*;
 
-        expr.ty = Some(match &expr.node {
+        expr.ty = Some(match &mut expr.node {
             Ident(name) => self.lookup_var_expect(name, expr.span)?,
+            Subscript(array, index) => self.elab_subscript(expr.span, array, index)?,
             _ => return Err(TypeError::mk(expr.span, InvalidLvalue)),
         });
         Ok(expr.ty.as_ref().unwrap())
@@ -256,8 +272,6 @@ impl Elaborator {
                     Box::new(self.elab_ty(ret_ty)?))),
             Ident(s) => Err(TypeError::mk(synty.span, TypeNotInScope(s.to_string()))),
             Parameterised(s, _) => Err(TypeError::mk(synty.span, TypeNotInScope(s.to_string()))),
-
-
         }
 
     }

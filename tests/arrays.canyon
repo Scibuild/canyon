@@ -1,0 +1,4 @@
+
+let my_array: arr[int] = [10, 20, 40, 35];
+my_array[0] = 12;
+my_array[0] * my_array[3]

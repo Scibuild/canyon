@@ -50,6 +50,21 @@ impl Compiler {
         writeln!(self.output, "{} = {} ;", sym, s);
     }
 
+    pub fn compile_lval(&mut self, expr: &ast::PExpr) -> String {
+        use ast::Expr_::*;
+        match &expr.node {
+            Ident(name) => {
+                format!("{}", Sym::User(name))
+            }
+            Subscript(array, index) => {
+                let array_res = self.compile_expr(array);
+                let index_res = self.compile_expr(index);
+                format!("{}[1+({})]", array_res, index_res)
+            }
+            _ => unreachable!()
+        }
+    }
+
     // The result of the expression is stored in the returned symbol
     pub fn compile_expr<'b>(&mut self, expr: &'b ast::PExpr) -> Sym<'b> {
         use ast::Expr_::*;
@@ -165,13 +180,10 @@ impl Compiler {
                 self.declare_local(&result);
             }
             Assign(lval, rval) => {
-                match &lval.node {
-                    Ident(name) => {
-                        let e = self.compile_expr(rval);
-                        self.store_existing(&Sym::User(name), &e);
-                    }
-                    _ => unreachable!(),
-                }
+                let lval_str = self.compile_lval(lval);
+                let rval_res = self.compile_expr(rval);
+                // TODO: this probably shouldnt be done manually here either
+                writeln!(self.output, "{} = {} ;", lval_str, rval_res);
             }
             FnCall(fun, args) => {
                 let fun_res = self.compile_expr(fun);
@@ -192,7 +204,7 @@ impl Compiler {
                 let array_res = self.compile_expr(array);
                 let index_res = self.compile_expr(index);
                 // TODO: our own safety checks
-                self.store_local(&result, &format!("{}[{}]", array_res, index_res))
+                self.store_local(&result, &format!("{}[1+({})]", array_res, index_res))
             }
             Lambda(args, _ret_ty, block) => {
                 write!(self.output, "local {} = function(", result);
@@ -211,6 +223,20 @@ impl Compiler {
             Selector(_expr, _field) => {
                 unimplemented!()
             }
+            ArrayLiteral(items) => {
+                let item_ress = items.iter().map(|i| self.compile_expr(i)).collect::<Vec<_>>();
+                write!(self.output, "local {} = {{", result);
+                let mut first = true;
+                for item in item_ress {
+                    if !first {
+                        write!(self.output, ", ");
+                    } 
+                    first = false;
+                    write!(self.output, "{}", item);
+                }
+                writeln!(self.output, "}};");
+            }
+
         }
         result
     }
