@@ -1,0 +1,11 @@
+1 + 2; 
+
+-- let my_func = fn(x: int, y: int) { x + y * x }; 
+
+let x = true;
+
+if x { 
+  10  
+} else {
+  20
+}

@@ -1,0 +1,6 @@
+
+let func: (int, int) int = fn(x: int, y: int) int {
+  x * y
+};
+
+func(23, 3)
