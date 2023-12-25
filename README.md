@@ -12,5 +12,7 @@ Looking forward to adding
 - [ ] libraries
 - [ ] the ability to interface with Lua code
 
-
 Compiles to Lua so garbage collection for free 😌
+
+And using `.clone()` is getting me through programming in Rust
+
