@@ -111,11 +111,14 @@ parser! {
     }
 
     nonOptSemiExpr: PExpr {
-        expr1[lhs] Eq expr1[rhs] => Node::mk(span!(), Expr_::Assign(lhs, rhs)),
+        expr1[lhs] Eq expr[rhs] => Node::mk(span!(), Expr_::Assign(lhs, rhs)),
         Let Ident(name) Colon typ[ty] => Node::mk(span!(), Expr_::VarDecl(name, Some(ty), None)),
         Let Ident(name) Eq expr[e] => Node::mk(span!(), Expr_::VarDecl(name, None, Some(e))),
         Let Ident(name) Colon typ[ty] Eq expr[e] => Node::mk(span!(), Expr_::VarDecl(name, Some(ty), Some(e))),
-        Fn Oparen params[params] Cparen typ[ret_ty] block[block] => Node::mk(span!(), Expr_::Lambda(params, ret_ty, block)),
+        Fn Oparen params[params] Cparen typ[ret_ty] block[body] => Node::mk(span!(), Expr_::Lambda(Lambda{params, ret_ty, body})),
+        Fn Ident(name) Oparen params[params] Cparen typ[ret_ty] block[body] => Node::mk(span!(), Expr_::FnDecl(name, Lambda{params, ret_ty, body})),
+        Type Ident(name) Eq typ[ty] => Node::mk(span!(), Expr_::TypeDecl(name, ty)),
+        Return expr[e] => Node::mk(span!(), Expr_::Return(e)),
         expr1[e] => e,
     }
 
@@ -226,6 +229,7 @@ parser! {
         Ident(name) => Node::mk(span!(), SynTy::Ident(name)),
         Ident(name) Obrack typArgs[args] Cbrack => Node::mk(span!(), SynTy::Parameterised(name, args)),
         Oparen typArgs[args] Cparen typ[ret_ty] => Node::mk(span!(), SynTy::Function(args, ret_ty)),
+        Record Obrace fieldDecls[fields] Cbrace => Node::mk(span!(), SynTy::Record(fields)),
     }
 
     typArgs: Vec<PSynTy> {
@@ -240,6 +244,23 @@ parser! {
             args.push(ty); args
         }
     }
+
+
+    fieldDecls: Vec<(String, PSynTy)> {
+        => vec![],
+        nonEmptyFieldDecls[p] => p,
+        nonEmptyFieldDecls[p] Comma => p,
+    }
+
+    nonEmptyFieldDecls: Vec<(String, PSynTy)> {
+        fieldDecl[p] => vec![p],
+        nonEmptyFieldDecls[mut ps] Comma fieldDecl[p] => { ps.push(p); ps }
+    }
+    
+    fieldDecl: (String, PSynTy) {
+        Ident(p) Colon typ[ty] => (p, ty)
+    }
+
 }
 
 pub fn parse<I: Iterator<Item = (Token, Span)>>(i: I)

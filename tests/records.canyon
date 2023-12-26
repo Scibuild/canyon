@@ -1,0 +1,11 @@
+type Point = record {
+  x: int,
+  y: int,
+};
+
+let my_point : Point;
+
+my_point.x = 34;
+my_point.y = 35;
+
+my_point

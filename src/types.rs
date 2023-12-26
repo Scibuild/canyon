@@ -6,13 +6,20 @@ pub enum Ty {
     Int,
     Bool,
     Unit,
+    // The type of expressions that do not return
     Bottom,
     Array(Box<Ty>),
     Fn(Vec<Ty>, Box<Ty>),
+    Record(Vec<(String, Ty)>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Var {
+    Type, Const, Variable
 }
 
 pub struct Elaborator {
-    vars: Vec<(String, Ty)>,
+    vars: Vec<(String, Ty, Var)>,
     scopes: Vec<usize>,
 }
 
@@ -26,12 +33,14 @@ pub enum TypeError_ {
     UnableToUnify(Ty, Ty),
     CannotSubscriptType(Ty),
     CannotCallType(Ty),
+    CannotSelectFieldFromType(String, Ty),
     VariableNotInScope(String),
     TypeNotInScope(String),
     //                  Expected Found
     FunctionExpectsNArgs(usize, usize),
     ParamTyExpectsNArgs(usize, usize),
     InvalidLvalue,
+    CannotAssignToConstant
 }
 use TypeError_::*;
 
@@ -60,17 +69,17 @@ impl Elaborator {
         }
     }
 
-    fn lookup_var(&self, name: &str) -> Option<Ty> {
-        self.vars.iter().rfind(|(s, _)| s == name).map(|x| x.1.clone())
+    fn lookup_var(&self, name: &str) -> Option<(Ty, Var)> {
+        self.vars.iter().rfind(|(s, _, _)| s == name).map(|x| (x.1.clone(), x.2))
     }
 
     // For when you want to generate an error if the variable cannot be found
-    fn lookup_var_expect(&self, name: &str, span: Span) -> Result<Ty, TypeError> {
+    fn lookup_var_expect(&self, name: &str, span: Span) -> Result<(Ty, Var), TypeError> {
         self.lookup_var(name).ok_or_else(|| TypeError::mk(span, VariableNotInScope(name.to_string())))
     }
 
-    fn insert_var(&mut self, name: &str, ty: Ty) {
-        self.vars.push((name.to_owned(), ty));
+    fn insert_var(&mut self, name: &str, ty: Ty, var: Var) {
+        self.vars.push((name.to_owned(), ty, var));
     }
 
     fn unify(&mut self, ty1: &Ty, ty2: &Ty, span: Span) -> Result<Ty, TypeError> {
@@ -134,7 +143,7 @@ impl Elaborator {
             },
             Int(_) => Ty::Int,
             Bool(_) => Ty::Bool,
-            Ident(name) => self.lookup_var_expect(name, expr.span)?,
+            Ident(name) => self.lookup_var_expect(name, expr.span)?.0,
             VarDecl(name, optty, expr) => {
 
                 let ty = if let Some(expr) = expr {
@@ -149,7 +158,7 @@ impl Elaborator {
                         unreachable!();
                 };
 
-                self.insert_var(name, ty);
+                self.insert_var(name, ty, Var::Variable);
 
                 Ty::Unit
             }
@@ -203,22 +212,20 @@ impl Elaborator {
                 *fun_ret_ty.to_owned()
             }
             Subscript(array, index) => self.elab_subscript(expr.span, array, index)?,
-            Lambda(args, ret_ty, block) => {
+            Lambda(l) => {
                 self.push_scope();
                 let mut args_elabbed: Vec<Ty> = vec![];
-                for (arg_name, arg_ty) in args.iter() {
+                for (arg_name, arg_ty) in l.params.iter() {
                     let arg_ty_elabbed = self.elab_ty(arg_ty)?;
                     args_elabbed.push(arg_ty_elabbed.clone());
-                    self.insert_var(arg_name, arg_ty_elabbed);
+                    self.insert_var(arg_name, arg_ty_elabbed, Var::Const);
                 }
-                let ret_ty_elabbed = self.elab_ty(ret_ty)?;
-                self.unify_expr(block, &ret_ty_elabbed)?;
+                let ret_ty_elabbed = self.elab_ty(&l.ret_ty)?;
+                self.unify_expr(&mut l.body, &ret_ty_elabbed)?;
                 self.pop_scope();
                 Ty::Fn(args_elabbed, Box::new(ret_ty_elabbed))
             }
-            Selector(_expr, _field) => {
-                unimplemented!()
-            }
+            Selector(subexpr, field) => self.elab_selector(expr.span, subexpr, field)?,
             ArrayLiteral(items) => {
                 if let Some((head, tail)) = items.split_first_mut() {
                     let item_ty = self.elaborate_expr(head)?;
@@ -231,6 +238,37 @@ impl Elaborator {
                     Ty::Array(Box::new(Ty::Bottom))
                 }
             }
+
+            FnDecl(name, lambda) => {
+                // TODO: Mutual recursion properly (probably factor a bunch of this out to happen
+                // before everything else)
+                let mut args_elabbed: Vec<Ty> = vec![];
+                for (arg_name, arg_ty) in &lambda.params {
+                    let arg_ty_elabbed = self.elab_ty(&arg_ty)?;
+                    args_elabbed.push(arg_ty_elabbed.clone());
+                    self.insert_var(&arg_name, arg_ty_elabbed, Var::Const);
+                }
+                let ret_ty_elabbed = self.elab_ty(&lambda.ret_ty)?;
+                let fn_ty = Ty::Fn(args_elabbed.clone(), Box::new(ret_ty_elabbed.clone()));
+                self.insert_var(name, fn_ty, Var::Const);
+
+                self.push_scope();
+                for ((arg_name, _), arg_ty_elabbed) in std::iter::zip(lambda.params.iter(), args_elabbed.iter()) {
+                    self.insert_var(&arg_name, arg_ty_elabbed.clone(), Var::Const);
+                }
+                self.unify_expr(&mut lambda.body, &ret_ty_elabbed)?;
+                self.pop_scope();
+                Ty::Unit
+            }
+            TypeDecl(name, synty) => {
+                let ty = self.elab_ty(&synty)?;
+                self.insert_var(name, ty, Var::Type);
+                Ty::Unit
+            }
+            // TODO:
+            // - Subtyping so that return can return Bottom which can be upcast into any type
+            // - Passing through the return type in the context or as a parameter
+            Return(_) => todo!(),
         });
         Ok(expr.ty.as_ref().unwrap())
     }
@@ -245,12 +283,34 @@ impl Elaborator {
                 Ok(*item_ty.clone())
     }
 
+    fn elab_selector(&mut self, span: Span, subexpr: &mut ast::PExpr, field: &str) -> Result<Ty, TypeError> {
+                let ty = self.elaborate_expr(subexpr)?;
+                match ty {
+                    Ty::Record(fields) => {
+                        Ok(fields.iter().find(|(fname, _)| fname == field)
+                            .ok_or(TypeError::mk(span, CannotSelectFieldFromType(field.to_string(), ty.clone())))?
+                            .1.clone())
+                    }
+                    ty => return Err(TypeError::mk(span, 
+                            CannotSelectFieldFromType(field.to_string(), ty.clone())))
+                }
+    }
+
+
     fn elab_lvalue<'a>(&mut self, expr: &'a mut ast::PExpr) -> Result<&'a Ty, TypeError> {
         use ast::Expr_::*;
 
         expr.ty = Some(match &mut expr.node {
-            Ident(name) => self.lookup_var_expect(name, expr.span)?,
+            Ident(name) => {
+                let (ty, var) = self.lookup_var_expect(name, expr.span)?;
+                if var == Var::Variable {
+                    ty
+                } else {
+                    return Err(TypeError::mk(expr.span, CannotAssignToConstant));
+                }
+            }
             Subscript(array, index) => self.elab_subscript(expr.span, array, index)?,
+            Selector(subexpr, field) => self.elab_selector(expr.span, subexpr, field)?,
             _ => return Err(TypeError::mk(expr.span, InvalidLvalue)),
         });
         Ok(expr.ty.as_ref().unwrap())
@@ -262,6 +322,13 @@ impl Elaborator {
             Ident(s) if s == "int" => Ok(Ty::Int),
             Ident(s) if s == "bool" => Ok(Ty::Bool),
             Ident(s) if s == "unit" => Ok(Ty::Unit),
+            Ident(s) => {
+                if let Some((ty, Var::Type)) = self.lookup_var(s) {
+                    Ok(ty)
+                } else {
+                    Err(TypeError::mk(synty.span, TypeNotInScope(s.to_string())))
+                }
+            }
             Parameterised(s, args) if s == "arr" => if args.len() == 1 {
                 Ok(Ty::Array(Box::new(self.elab_ty(&args[0])?)))
             } else {
@@ -270,10 +337,9 @@ impl Elaborator {
             Function(args, ret_ty) => Ok(Ty::Fn(
                     args.iter().map(|t| self.elab_ty(t)).collect::<Result<Vec<_>, _>>()?, 
                     Box::new(self.elab_ty(ret_ty)?))),
-            Ident(s) => Err(TypeError::mk(synty.span, TypeNotInScope(s.to_string()))),
             Parameterised(s, _) => Err(TypeError::mk(synty.span, TypeNotInScope(s.to_string()))),
+            Record(fields) => Ok(Ty::Record(fields.iter().map::<Result<_, _>, _>(
+                        |(name, synty)| Ok((name.clone(), self.elab_ty(synty)?))).collect::<Result<Vec<_>,_>>()?))
         }
-
     }
-
 }

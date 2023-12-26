@@ -14,6 +14,10 @@ pub enum Token {
     Import,
     Let,
     Fn,
+    Type,
+    Return,
+
+    Record,
 
     Colon,
     Semi,
@@ -63,6 +67,9 @@ lexer! {
     "import" => Token::Import,
     "let" => Token::Let,
     "fn" => Token::Fn,
+    "type" => Token::Type,
+    "return" => Token::Return,
+    "record" => Token::Record,
     ":" => Token::Colon,
     ";" => Token::Semi,
     r#"\("# => Token::Oparen,

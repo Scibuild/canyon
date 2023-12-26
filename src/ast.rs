@@ -9,7 +9,6 @@ impl<T> Node<T> {
     pub fn mk(span: Span, node: T) -> Box<Node<T>> {
         Box::new(Node::<T> { span, node, ty: None })
     }
-
 }
 
 impl<T> fmt::Display for Node<T> 
@@ -72,9 +71,21 @@ pub enum Expr_ {
     If(PExpr, PExpr, Option<PExpr>),
     While(PExpr, PExpr),
     Block(Vec<Option<PExpr>>),
-    Lambda(Vec<(String, PSynTy)>, PSynTy, PExpr),
+    //     Params                 ret ty  body
+    Lambda(Lambda),
+    // Needed to write recursive functions i think, at least its an easy solution
+    FnDecl(String, Lambda),
     VarDecl(String, Option<PSynTy>, Option<PExpr>),
     ArrayLiteral(Vec<PExpr>),
+    TypeDecl(String, PSynTy),
+    Return(PExpr),
+}
+
+#[derive(Debug)]
+pub struct Lambda {
+    pub params: Vec<(String, PSynTy)>, 
+    pub ret_ty: PSynTy, 
+    pub body: PExpr
 }
 
 impl fmt::Display for Expr_ {
@@ -109,12 +120,19 @@ impl fmt::Display for Expr_ {
                 }
                 write!(f, "}}")
             }
-            Lambda(params, retty, body) => {
+            Lambda(l) => {
                 write!(f, "fn(")?;
-                for param in params {
+                for param in &l.params {
                     write!(f, "{}: {}, ", param.0, param.1)?;
                 }
-                write!(f, ") {} {}", retty, body)
+                write!(f, ") {} {}", l.ret_ty, l.body)
+            }
+            FnDecl(name, l) => {
+                write!(f, "fn {}(", name)?;
+                for param in &l.params {
+                    write!(f, "{}: {}, ", param.0, param.1)?;
+                }
+                write!(f, ") {} {}", l.ret_ty, l.body)
             }
             VarDecl(name, ty, expr) => {
                 write!(f, "let {}", name)?;
@@ -133,6 +151,12 @@ impl fmt::Display for Expr_ {
                 }
                 write!(f, "]")
             }
+            TypeDecl(name, ty) => {
+                write!(f, "type {} = {}", name, ty)
+            }
+            Return(expr) => {
+                write!(f, "return {}", expr)
+            }
         }
     }
 }
@@ -142,7 +166,8 @@ impl fmt::Display for Expr_ {
 pub enum SynTy {
     Ident(String),
     Parameterised(String, Vec<PSynTy>),
-    Function(Vec<PSynTy>, PSynTy)
+    Function(Vec<PSynTy>, PSynTy),
+    Record(Vec<(String, PSynTy)>),
 }
 
 impl fmt::Display for SynTy {
@@ -168,6 +193,13 @@ impl fmt::Display for SynTy {
                     write!(f, "{}", arg)?;
                 }
                 write!(f, ") {}", ret_ty)
+            }
+            SynTy::Record(fields) => {
+                write!(f, "record {{")?;
+                for (name, ty) in fields {
+                    writeln!(f, "{}: {},", name, ty)?;
+                }
+                write!(f, "}}")
             }
         }
     }

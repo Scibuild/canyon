@@ -61,6 +61,10 @@ impl Compiler {
                 let index_res = self.compile_expr(index);
                 format!("{}[1+({})]", array_res, index_res)
             }
+            Selector(subexpr, field) => {
+                let subexpr_res = self.compile_expr(subexpr);
+                format!("{}.{}", subexpr_res, field)
+            }
             _ => unreachable!()
         }
     }
@@ -136,13 +140,24 @@ impl Compiler {
                 // self.store_local(&result, &Sym::User(name));
             }
             VarDecl(name, _opt_ty, expr) => {
+                let sym = Sym::User(name);
                 if let Some(expr) = expr {
                     let e = self.compile_expr(expr);
-                    self.store_local(&Sym::User(name), &e);
+                    self.store_local(&sym, &e);
+                } else {
+                    self.declare_local(&sym);
                 }
             }
             Block(exprs) => {
                 self.declare_local(&result);
+                for e in exprs.iter() {
+                    if let Some(e) = e {
+                        if let FnDecl(name, _) = &e.node {
+                            self.declare_local(&Sym::User(&name));
+                        }
+                    }
+                }
+
                 writeln!(self.output, "do");
                 for (i, e) in exprs.iter().enumerate() {
                     if let Some(e) = e {
@@ -206,22 +221,13 @@ impl Compiler {
                 // TODO: our own safety checks
                 self.store_local(&result, &format!("{}[1+({})]", array_res, index_res))
             }
-            Lambda(args, _ret_ty, block) => {
-                write!(self.output, "local {} = function(", result);
-                let mut first = true;
-                for arg in args {
-                    if !first {
-                        write!(self.output, ", ");
-                    } 
-                    first = false;
-                    write!(self.output, "{}", Sym::User(&arg.0));
-                }
-                writeln!(self.output, ")");
-                let ret_val = self.compile_expr(block);
-                writeln!(self.output, "return {}\nend;", ret_val);
+            Lambda(l) => {
+                self.declare_local(&result);
+                self.compile_lambda(l, &result);
             }
-            Selector(_expr, _field) => {
-                unimplemented!()
+            Selector(subexpr, field) => {
+                let subexpr_res = self.compile_expr(subexpr);
+                self.store_local(&result, &format!("{}.{}", subexpr_res, field))
             }
             ArrayLiteral(items) => {
                 let item_ress = items.iter().map(|i| self.compile_expr(i)).collect::<Vec<_>>();
@@ -236,8 +242,35 @@ impl Compiler {
                 }
                 writeln!(self.output, "}};");
             }
+            FnDecl(name, l) => {
+                // FnDecls can only appear in blocks so the fn has already been declared in the
+                // scope, i think this works need to think harder, and make sure that first bit is
+                // true in the parser
+                self.compile_lambda(l, &Sym::User(&name));
+            },
+            TypeDecl(_, _) => {},
+            Return(expr) => {
+                let expr_res = self.compile_expr(expr);
+                writeln!(self.output, "return {};", expr_res);
+            }
 
         }
         result
+    }
+
+    /// result must be declared before calling
+    pub fn compile_lambda<'b>(&mut self, l: &ast::Lambda, result: &Sym) {
+        write!(self.output, "{} = function(", result);
+        let mut first = true;
+        for param in &l.params {
+            if !first {
+                write!(self.output, ", ");
+            } 
+            first = false;
+            write!(self.output, "{}", Sym::User(&param.0));
+        }
+        writeln!(self.output, ")");
+        let ret_val = self.compile_expr(&l.body);
+        writeln!(self.output, "return {}\nend;", ret_val);
     }
 }
