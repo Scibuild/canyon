@@ -68,11 +68,11 @@ parser! {
     }
 
     nonemptyStatements: Vec<Option<PExpr>> {
-        nonOptSemiExpr[e] => vec![Some(e)],
-        nonOptSemiExpr[e] semiStatements[mut ss] => { ss.push(Some(e)); ss },
-        optSemiExpr[e] => vec![Some(e)],
-        optSemiExpr[e] semiStatements[mut ss] => { ss.push(Some(e)); ss },
-        optSemiExpr[e] nonemptyStatements[mut ss] => { ss.push(Some(e)); ss }
+        nonOptSemiStmt[e] => vec![Some(e)],
+        nonOptSemiStmt[e] semiStatements[mut ss] => { ss.push(Some(e)); ss },
+        optSemiStmt[e] => vec![Some(e)],
+        optSemiStmt[e] semiStatements[mut ss] => { ss.push(Some(e)); ss },
+        optSemiStmt[e] nonemptyStatements[mut ss] => { ss.push(Some(e)); ss }
     }
 
     statementsOptSemi: Vec<Option<PExpr>> {
@@ -86,7 +86,7 @@ parser! {
     }
 
     maybeStatement: Option<PExpr> {
-        nonOptSemiExpr[e] => Some(e),
+        nonOptSemiStmt[e] => Some(e),
         => None
     }
 
@@ -101,6 +101,20 @@ parser! {
         }
     }
 
+    nonOptSemiStmt: PExpr {
+        Let Ident(name) Colon typ[ty] => Node::mk(span!(), Expr_::VarDecl(name, Some(ty), None)),
+        Let Ident(name) Eq expr[e] => Node::mk(span!(), Expr_::VarDecl(name, None, Some(e))),
+        Let Ident(name) Colon typ[ty] Eq expr[e] => Node::mk(span!(), Expr_::VarDecl(name, Some(ty), Some(e))),
+        Type Ident(name) Eq typ[ty] => Node::mk(span!(), Expr_::TypeDecl(name, ty)),
+        nonOptSemiExpr[e] => e,
+    }
+
+    optSemiStmt: PExpr {
+        Fn Oparen params[params] Cparen typ[ret_ty] block[body] => Node::mk(span!(), Expr_::Lambda(Lambda{params, ret_ty, body})),
+        Fn Ident(name) Oparen params[params] Cparen typ[ret_ty] block[body] => Node::mk(span!(), Expr_::FnDecl(name, Lambda{params, ret_ty, body})),
+        optSemiExpr[e] => e,
+    }
+
     // Semicolons are optional after these expressions in statement form
     optSemiExpr: PExpr {
         If expr1[cond] block[block] 
@@ -112,12 +126,6 @@ parser! {
 
     nonOptSemiExpr: PExpr {
         expr1[lhs] Eq expr[rhs] => Node::mk(span!(), Expr_::Assign(lhs, rhs)),
-        Let Ident(name) Colon typ[ty] => Node::mk(span!(), Expr_::VarDecl(name, Some(ty), None)),
-        Let Ident(name) Eq expr[e] => Node::mk(span!(), Expr_::VarDecl(name, None, Some(e))),
-        Let Ident(name) Colon typ[ty] Eq expr[e] => Node::mk(span!(), Expr_::VarDecl(name, Some(ty), Some(e))),
-        Fn Oparen params[params] Cparen typ[ret_ty] block[body] => Node::mk(span!(), Expr_::Lambda(Lambda{params, ret_ty, body})),
-        Fn Ident(name) Oparen params[params] Cparen typ[ret_ty] block[body] => Node::mk(span!(), Expr_::FnDecl(name, Lambda{params, ret_ty, body})),
-        Type Ident(name) Eq typ[ty] => Node::mk(span!(), Expr_::TypeDecl(name, ty)),
         Return expr[e] => Node::mk(span!(), Expr_::Return(e)),
         expr1[e] => e,
     }

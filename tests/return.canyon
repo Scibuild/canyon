@@ -1,0 +1,9 @@
+
+
+fn exitEarly(x: bool) int {
+  if x {
+    return 10;
+  }
+
+  20
+}

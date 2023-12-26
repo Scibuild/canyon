@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use crate::ast;
 use crate::lexer::Span;
 
@@ -21,6 +23,8 @@ pub enum Var {
 pub struct Elaborator {
     vars: Vec<(String, Ty, Var)>,
     scopes: Vec<usize>,
+
+    ret_ty: Option<Ty>,
 }
 
 pub struct TypeError {
@@ -40,7 +44,10 @@ pub enum TypeError_ {
     FunctionExpectsNArgs(usize, usize),
     ParamTyExpectsNArgs(usize, usize),
     InvalidLvalue,
-    CannotAssignToConstant
+    CannotAssignToConstant,
+    FieldNamesMustBeUnique,
+    CannotReturnFromOutsideFunction,
+    
 }
 use TypeError_::*;
 
@@ -55,6 +62,7 @@ impl Elaborator {
         Elaborator {
             vars: vec![],
             scopes: vec![0],
+            ret_ty: None,
         }
     }
 
@@ -82,20 +90,48 @@ impl Elaborator {
         self.vars.push((name.to_owned(), ty, var));
     }
 
-    fn unify(&mut self, ty1: &Ty, ty2: &Ty, span: Span) -> Result<Ty, TypeError> {
-        if ty1 == ty2 {
-            Ok(ty1.clone())
-        } else {
-            Err(TypeError::mk(span, UnableToUnify(ty1.clone(), ty2.clone())))
+    fn unable_to_unify(ty1: &Ty, ty2: &Ty, span: Span) -> Result<Ty, TypeError> {
+        Err(TypeError::mk(span, UnableToUnify(ty1.clone(), ty2.clone())))
+    }
+
+    // Essentially checks if you can cast ty1 to ty2 solving arbitrary constrains (currently there
+    // are no type constraints so its just a subtype check)
+    fn unify_subtype(&mut self, ty1: &Ty, ty2: &Ty, span: Span) -> Result<Ty, TypeError> {
+        match (ty1, ty2) {
+            (Ty::Bottom, b) => Ok(b.clone()),
+            (Ty::Array(a), Ty::Array(b)) => Ok(Ty::Array(Box::new(self.unify_subtype(a, b, span)?))),
+            (Ty::Record(a_fields), Ty::Record(b_fields)) => {
+                // Since field names are unique, we just need to check every field in a is in b and
+                // that they have the same number of fields
+                // Once we have optionals then we ought to be able to upcast and auto-null fields
+                // but we arent doing that yet
+
+                let mut result: Vec<(String, Ty)> = vec![];
+                for (name, ty) in a_fields {
+                    if let Some((_, b_ty)) = b_fields.iter().find(|f| name == &f.0) {
+                        result.push((name.clone(), self.unify_subtype(ty, b_ty, span)?));
+                    } else {
+                        return Self::unable_to_unify(ty1, ty2, span)
+                    }
+                }
+                Ok(Ty::Record(result))
+            }
+            // TODO: function unification
+            // x : a -> b := y : c -> d
+            // then a <: c and d <: b
+
+            (a, b) if a == b => Ok(b.clone()),
+            _ => Self::unable_to_unify(ty1, ty2, span),
         }
 
     }
 
-    fn unify_expr<'a>(&mut self, expr: &'a mut ast::PExpr, ty: &Ty) -> Result<&'a Ty, TypeError> {
+    // Checks if can cast expr to type ty
+    fn unify_expr_subtype<'a>(&mut self, expr: &'a mut ast::PExpr, ty: &Ty) -> Result<&'a Ty, TypeError> {
         if expr.ty.is_none() {
             self.elaborate_expr(expr)?;
         }
-        let res_ty = self.unify(expr.ty.as_ref().unwrap(), ty, expr.span)?;
+        let res_ty = self.unify_subtype(expr.ty.as_ref().unwrap(), ty, expr.span)?;
         expr.ty = Some(res_ty);
         Ok(expr.ty.as_ref().unwrap())
     }
@@ -107,23 +143,23 @@ impl Elaborator {
                 use ast::BinOp::*;
                 match op {
                     Add | Sub | Mul | Div  => {
-                        self.unify_expr(lhs, &Ty::Int)?;
-                        self.unify_expr(rhs, &Ty::Int)?;
+                        self.unify_expr_subtype(lhs, &Ty::Int)?;
+                        self.unify_expr_subtype(rhs, &Ty::Int)?;
                         Ty::Int
                     },
                     | Le | Lt | Ge | Gt => {
-                        self.unify_expr(lhs, &Ty::Int)?;
-                        self.unify_expr(rhs, &Ty::Int)?;
+                        self.unify_expr_subtype(lhs, &Ty::Int)?;
+                        self.unify_expr_subtype(rhs, &Ty::Int)?;
                         Ty::Bool
                     },
                     And | Or => {
-                        self.unify_expr(lhs, &Ty::Bool)?;
-                        self.unify_expr(rhs, &Ty::Bool)?;
+                        self.unify_expr_subtype(lhs, &Ty::Bool)?;
+                        self.unify_expr_subtype(rhs, &Ty::Bool)?;
                         Ty::Bool
                     },
                     Eqq | Ne => {
                         self.elaborate_expr(lhs)?;
-                        self.unify_expr(rhs, lhs.ty.as_ref().unwrap())?;
+                        self.unify_expr_subtype(rhs, lhs.ty.as_ref().unwrap())?;
                         Ty::Bool
                     }
                 }
@@ -132,11 +168,11 @@ impl Elaborator {
                 use ast::UnOp::*;
                 match op {
                     Neg => {
-                        self.unify_expr(rhs, &Ty::Int)?;
+                        self.unify_expr_subtype(rhs, &Ty::Int)?;
                         Ty::Int
                     }
                     Not => {
-                        self.unify_expr(rhs, &Ty::Bool)?;
+                        self.unify_expr_subtype(rhs, &Ty::Bool)?;
                         Ty::Bool
                     }
                 }
@@ -148,7 +184,7 @@ impl Elaborator {
 
                 let ty = if let Some(expr) = expr {
                     if let Some(ty) = optty {
-                        self.unify_expr(expr, &self.elab_ty(ty)?)?.clone()
+                        self.unify_expr_subtype(expr, &self.elab_ty(ty)?)?.clone()
                     } else {
                         self.elaborate_expr(expr)?.clone()
                     }
@@ -176,22 +212,22 @@ impl Elaborator {
                 res
             }
             If(cond, block, else_block) => {
-                self.unify_expr(cond, &Ty::Bool)?;
+                self.unify_expr_subtype(cond, &Ty::Bool)?;
                 if let Some(else_block) = else_block {
                     let resty = self.elaborate_expr(block)?;
-                    self.unify_expr(else_block, resty)?;
+                    self.unify_expr_subtype(else_block, resty)?;
                     resty.clone()
                 } else {
-                    self.unify_expr(block, &Ty::Unit)?.clone()
+                    self.unify_expr_subtype(block, &Ty::Unit)?.clone()
                 }
             }
             While(cond, block) => {
-                self.unify_expr(cond, &Ty::Bool)?;
-                self.unify_expr(block, &Ty::Unit)?.clone()
+                self.unify_expr_subtype(cond, &Ty::Bool)?;
+                self.unify_expr_subtype(block, &Ty::Unit)?.clone()
             }
             Assign(lval, rval) => {
                 let lval_ty = self.elab_lvalue(lval)?;
-                self.unify_expr(rval, lval_ty)?;
+                self.unify_expr_subtype(rval, lval_ty)?;
                 Ty::Unit
             }
             FnCall(fun, args) => {
@@ -206,7 +242,7 @@ impl Elaborator {
                 }
                 for (fun_arg, arg) in std::iter::zip(fun_args_ty.iter(), 
                         args.iter_mut()) {
-                    self.unify_expr(arg, fun_arg)?;
+                    self.unify_expr_subtype(arg, fun_arg)?;
                 }
 
                 *fun_ret_ty.to_owned()
@@ -221,8 +257,15 @@ impl Elaborator {
                     self.insert_var(arg_name, arg_ty_elabbed, Var::Const);
                 }
                 let ret_ty_elabbed = self.elab_ty(&l.ret_ty)?;
-                self.unify_expr(&mut l.body, &ret_ty_elabbed)?;
+
+                let outer_ret_ty = self.ret_ty.clone();
+                self.ret_ty = Some(ret_ty_elabbed.clone());
+
+                self.unify_expr_subtype(&mut l.body, &ret_ty_elabbed)?;
                 self.pop_scope();
+
+                self.ret_ty = outer_ret_ty;
+
                 Ty::Fn(args_elabbed, Box::new(ret_ty_elabbed))
             }
             Selector(subexpr, field) => self.elab_selector(expr.span, subexpr, field)?,
@@ -230,7 +273,7 @@ impl Elaborator {
                 if let Some((head, tail)) = items.split_first_mut() {
                     let item_ty = self.elaborate_expr(head)?;
                     for item in tail {
-                        self.unify_expr(item, item_ty)?;
+                        self.unify_expr_subtype(item, item_ty)?;
                     }
 
                     Ty::Array(Box::new(item_ty.clone()))
@@ -252,12 +295,18 @@ impl Elaborator {
                 let fn_ty = Ty::Fn(args_elabbed.clone(), Box::new(ret_ty_elabbed.clone()));
                 self.insert_var(name, fn_ty, Var::Const);
 
+                let outer_ret_ty = self.ret_ty.clone();
+                self.ret_ty = Some(ret_ty_elabbed.clone());
+
                 self.push_scope();
                 for ((arg_name, _), arg_ty_elabbed) in std::iter::zip(lambda.params.iter(), args_elabbed.iter()) {
                     self.insert_var(&arg_name, arg_ty_elabbed.clone(), Var::Const);
                 }
-                self.unify_expr(&mut lambda.body, &ret_ty_elabbed)?;
+                self.unify_expr_subtype(&mut lambda.body, &ret_ty_elabbed)?;
                 self.pop_scope();
+
+                self.ret_ty = outer_ret_ty;
+
                 Ty::Unit
             }
             TypeDecl(name, synty) => {
@@ -268,13 +317,21 @@ impl Elaborator {
             // TODO:
             // - Subtyping so that return can return Bottom which can be upcast into any type
             // - Passing through the return type in the context or as a parameter
-            Return(_) => todo!(),
+            Return(ret_expr) => {
+                let ret_ty = match &self.ret_ty {
+                    Some(ret_ty) => ret_ty.clone(),
+                    None => return Err(TypeError::mk(expr.span, CannotReturnFromOutsideFunction)),
+                };
+                self.unify_expr_subtype(ret_expr, &ret_ty)?;
+
+                Ty::Bottom
+            }
         });
         Ok(expr.ty.as_ref().unwrap())
     }
 
     fn elab_subscript(&mut self, span: Span, array: &mut ast::PExpr, index: &mut ast::PExpr) -> Result<Ty, TypeError> {
-                self.unify_expr(index, &Ty::Int)?;
+                self.unify_expr_subtype(index, &Ty::Int)?;
                 let item_ty = match self.elaborate_expr(array)? {
                     Ty::Array(item) => item,
                     ty => return Err(TypeError::mk(span, 
@@ -338,8 +395,18 @@ impl Elaborator {
                     args.iter().map(|t| self.elab_ty(t)).collect::<Result<Vec<_>, _>>()?, 
                     Box::new(self.elab_ty(ret_ty)?))),
             Parameterised(s, _) => Err(TypeError::mk(synty.span, TypeNotInScope(s.to_string()))),
-            Record(fields) => Ok(Ty::Record(fields.iter().map::<Result<_, _>, _>(
-                        |(name, synty)| Ok((name.clone(), self.elab_ty(synty)?))).collect::<Result<Vec<_>,_>>()?))
+            Record(fields) => {
+                let mut unique_set = HashSet::new();
+                let unique = fields.iter().map(|x| &x.0).all(|x| unique_set.insert(x));
+                if unique {
+                    Ok(Ty::Record(fields.iter().map::<Result<_, _>, _>(
+                            |(name, synty)| Ok((name.clone(), self.elab_ty(synty)?)))
+                        .collect::<Result<Vec<_>,_>>()?))
+                } else {
+                    Err(TypeError::mk(synty.span, FieldNamesMustBeUnique))
+                }
+
+            }
         }
     }
 }
